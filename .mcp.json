@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "vault-kit": {
+      "command": "mix",
+      "args": ["run", "--no-halt"],
+      "env": {
+        "VAULT_PATH": "/home/user/Dropbox/notes"
+      }
+    }
+  }
+}

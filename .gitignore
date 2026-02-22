@@ -1,0 +1,14 @@
+# Elixir
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+erl_crash.dump
+*.ez
+vault_kit-*.tar
+/priv/plts/
+
+# Node / TypeScript
+node_modules/
+dist/
