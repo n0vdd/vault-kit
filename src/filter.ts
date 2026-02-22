@@ -8,6 +8,7 @@ export interface FilterOptions {
   modifiedBefore?: string;
   tags?: string[];
   excludeTags?: string[];
+  tagsMode?: "any" | "all";
 }
 
 export interface PaginationOpts {
@@ -30,6 +31,7 @@ export interface CompiledFilter {
   modifiedBefore?: Date;
   tagSet?: Set<string>;
   excludeTagSet?: Set<string>;
+  tagsMode: "any" | "all";
 }
 
 function compileExcludePattern(pattern?: string): RegExp | undefined {
@@ -59,6 +61,7 @@ export function compileFilter(opts: FilterOptions): CompiledFilter {
       : undefined,
     tagSet: normalizeTagSet(opts.tags),
     excludeTagSet: normalizeTagSet(opts.excludeTags),
+    tagsMode: opts.tagsMode ?? "any",
   };
 }
 
@@ -111,22 +114,25 @@ function hasMatchingTag(note: Note, tagSet: Set<string>): boolean {
   );
 }
 
-export function passesTagFilter(
-  note: Note,
-  tags?: string[],
-  excludeTags?: string[],
-): boolean {
-  if (tags && tags.length > 0) {
-    const wanted = new Set(tags.map((t) => t.replace(/^#/, "").toLowerCase()));
-    if (!hasMatchingTag(note, wanted)) return false;
-  }
-  if (excludeTags && excludeTags.length > 0) {
-    const blocked = new Set(
-      excludeTags.map((t) => t.replace(/^#/, "").toLowerCase()),
-    );
-    if (hasMatchingTag(note, blocked)) return false;
+function hasAllTags(note: Note, tagSet: Set<string>): boolean {
+  const noteTags = new Set([
+    ...note.frontmatterTags.map((t) => t.toLowerCase()),
+    ...note.inlineTags.map((t) => t.toLowerCase()),
+  ]);
+  for (const tag of tagSet) {
+    if (!noteTags.has(tag)) return false;
   }
   return true;
+}
+
+function matchesTags(
+  note: Note,
+  tagSet: Set<string>,
+  mode: "any" | "all",
+): boolean {
+  return mode === "all"
+    ? hasAllTags(note, tagSet)
+    : hasMatchingTag(note, tagSet);
 }
 
 export function passesCompiledFilter(
@@ -143,7 +149,7 @@ export function passesCompiledFilter(
   if (!passesExcludePattern(note.name, cf.excludeRe)) return false;
   if (cf.modifiedAfter && note.mtime < cf.modifiedAfter) return false;
   if (cf.modifiedBefore && note.mtime > cf.modifiedBefore) return false;
-  if (cf.tagSet && !hasMatchingTag(note, cf.tagSet)) return false;
+  if (cf.tagSet && !matchesTags(note, cf.tagSet, cf.tagsMode)) return false;
   if (cf.excludeTagSet && hasMatchingTag(note, cf.excludeTagSet)) return false;
   return true;
 }

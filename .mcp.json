@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "vault-kit": {
-      "command": "node",
+      "command": "bun",
       "args": ["dist/index.js"],
       "cwd": "/home/user/Work/obsidian_ai_tools",
       "env": {

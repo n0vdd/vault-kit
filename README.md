@@ -52,9 +52,19 @@ TypeScript MCP server for Obsidian vaults. Parses Obsidian-flavored markdown (wi
 ```bash
 git clone https://github.com/n0vdd/vault-kit.git
 cd vault-kit
-npm install
-npm run build
+bun install
+bun run build
 ```
+
+### Compiled binary
+
+Build a standalone binary (no runtime needed):
+
+```bash
+bun run build:bin
+```
+
+This produces a `vault-kit` executable you can place anywhere on your `PATH`.
 
 ## Configuration
 
@@ -66,8 +76,23 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "vault-kit": {
-      "command": "node",
+      "command": "bun",
       "args": ["/path/to/vault-kit/dist/index.js"],
+      "env": {
+        "VAULT_PATH": "/path/to/your/vault"
+      }
+    }
+  }
+}
+```
+
+Or with the compiled binary:
+
+```json
+{
+  "mcpServers": {
+    "vault-kit": {
+      "command": "/path/to/vault-kit",
       "env": {
         "VAULT_PATH": "/path/to/your/vault"
       }
@@ -84,7 +109,7 @@ Add a `.mcp.json` to your project root:
 {
   "mcpServers": {
     "vault-kit": {
-      "command": "node",
+      "command": "bun",
       "args": ["dist/index.js"],
       "cwd": "/path/to/vault-kit",
       "env": {
@@ -118,14 +143,15 @@ MCP client → index.ts (McpServer) → tools/index.ts → graph.ts / search.ts 
 
 | Command                | Description                        |
 | ---------------------- | ---------------------------------- |
-| `npm run build`        | Compile TypeScript                 |
-| `npm test`             | Run all tests (vitest)             |
-| `npm run test:watch`   | Run tests in watch mode            |
-| `npm run lint`         | Run ESLint                         |
-| `npm run lint:fix`     | Run ESLint with auto-fix           |
-| `npm run format`       | Format code with Prettier          |
-| `npm run format:check` | Check formatting                   |
-| `npm run check:unused` | Find unused exports/deps with Knip |
+| `bun run build`        | Compile TypeScript                 |
+| `bun test`             | Run all tests (vitest)             |
+| `bun run test:watch`   | Run tests in watch mode            |
+| `bun run lint`         | Run ESLint                         |
+| `bun run lint:fix`     | Run ESLint with auto-fix           |
+| `bun run format`       | Format code with Prettier          |
+| `bun run format:check` | Check formatting                   |
+| `bun run build:bin`    | Compile standalone binary          |
+| `bun run check:unused` | Find unused exports/deps with Knip |
 
 ## License
 

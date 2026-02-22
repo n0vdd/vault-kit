@@ -6,6 +6,7 @@ import {
   batchFindBacklinks,
   orphans,
   missingNotes,
+  missingNotesBySource,
   resolve,
   stats,
   rebuildGraph,
@@ -85,6 +86,39 @@ const tagsFilterSchema = {
     .describe(
       "Exclude notes that have any of these tags (e.g. ['journal', 'excalidraw'])",
     ),
+  tags_mode: z
+    .enum(["any", "all"])
+    .optional()
+    .default("any")
+    .describe(
+      "How to match tags: 'any' (default) matches notes with at least one tag, 'all' requires every tag to be present",
+    ),
+};
+
+const folderSchema = {
+  folder: z
+    .string()
+    .optional()
+    .describe(
+      "Only include notes in this folder (e.g. 'journal' or 'projects')",
+    ),
+};
+
+const commonFilterSchema = {
+  ...folderSchema,
+  ...excludeFoldersSchema,
+  ...excludePatternSchema,
+  ...tagsFilterSchema,
+  ...dateFilterSchema,
+  ...paginationSchema,
+};
+
+const commonFilterNoPagination = {
+  ...folderSchema,
+  ...excludeFoldersSchema,
+  ...excludePatternSchema,
+  ...tagsFilterSchema,
+  ...dateFilterSchema,
 };
 
 function jsonResult(data: unknown) {
@@ -102,6 +136,7 @@ function mapFilterOpts(
     modifiedBefore: input.modified_before as string | undefined,
     tags: input.tags as string[] | undefined,
     excludeTags: input.exclude_tags as string[] | undefined,
+    tagsMode: input.tags_mode as "any" | "all" | undefined,
     limit: input.limit as number | undefined,
     offset: input.offset as number | undefined,
   };
@@ -149,17 +184,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
         note_name: z
           .string()
           .describe("Name of the note to find backlinks for"),
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include backlinks from notes in this folder (e.g. 'journal' or 'projects')",
-          ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        ...commonFilterSchema,
       },
     },
     ({ note_name, ...rest }) =>
@@ -172,17 +197,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
       description:
         "Find notes with no incoming links from other notes (orphans). Optionally filter by folder, tags, date, or exclude by name pattern.",
       inputSchema: {
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include notes in this folder (e.g. 'journal' or 'projects')",
-          ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        ...commonFilterSchema,
       },
     },
     (input) => jsonResult(orphans(state, mapFilterOpts(input))),
@@ -201,33 +216,33 @@ export function registerAllTools(server: McpServer, state: GraphState) {
           .describe(
             "Filter by type: 'note' for broken wikilinks, 'embed' for missing images/attachments, 'all' for both",
           ),
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include broken links from notes in this folder (e.g. 'journal' or 'projects')",
-          ),
         note_names: z
           .array(z.string())
           .optional()
           .describe(
             "Only show broken links originating from these specific notes (resolved by name)",
           ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        group_by: z
+          .enum(["target", "source"])
+          .optional()
+          .default("target")
+          .describe(
+            "Group results by 'target' (default, groups by broken link name) or 'source' (groups by the note containing broken links, sorted by count desc)",
+          ),
+        ...commonFilterSchema,
       },
     },
-    ({ type, note_names, ...rest }) =>
-      jsonResult(
-        missingNotes(state, {
-          type,
-          noteNames: note_names,
-          ...mapFilterOpts(rest),
-        }),
-      ),
+    ({ type, note_names, group_by, ...rest }) => {
+      const sharedOpts = {
+        type,
+        noteNames: note_names,
+        ...mapFilterOpts(rest),
+      };
+      if (group_by === "source") {
+        return jsonResult(missingNotesBySource(state, sharedOpts));
+      }
+      return jsonResult(missingNotes(state, sharedOpts));
+    },
   );
 
   server.registerTool(
@@ -291,25 +306,23 @@ export function registerAllTools(server: McpServer, state: GraphState) {
           .describe(
             "Treat query as a regular expression instead of a literal string (default: false)",
           ),
-        folder: z
-          .string()
+        multi_term: z
+          .boolean()
           .optional()
+          .default(true)
           .describe(
-            "Only search notes in this folder (e.g. 'journal' or 'projects')",
+            "When true (default), multi-word queries match ANY term (OR). Set to false for exact substring matching.",
           ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        ...commonFilterSchema,
       },
     },
-    ({ query, whole_word, include_names, regex, ...rest }) =>
+    ({ query, whole_word, include_names, regex, multi_term, ...rest }) =>
       jsonResult(
         search(query, state, {
           wholeWord: whole_word,
           includeNames: include_names,
           regex,
+          multiTerm: multi_term,
           ...mapFilterOpts(rest),
         }),
       ),
@@ -326,17 +339,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
           .describe(
             "Tag to search for (with or without leading #). Searches both frontmatter and inline tags.",
           ),
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include notes in this folder (e.g. 'journal' or 'projects')",
-          ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        ...commonFilterSchema,
       },
     },
     ({ tag, ...rest }) =>
@@ -349,16 +352,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
       description:
         "Return vault-wide statistics: total notes, tagged/untagged counts, orphan count, and broken link count. Optionally scoped by folder, tags, date, or name pattern.",
       inputSchema: {
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include notes in this folder (e.g. 'journal' or 'projects')",
-          ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
+        ...commonFilterNoPagination,
       },
     },
     (input) => jsonResult(stats(state, mapFilterOpts(input))),
@@ -414,17 +408,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
           .describe(
             "Array of note names to find backlinks for (1-50 names, without .md extension)",
           ),
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include backlinks from notes in this folder (e.g. 'journal' or 'projects')",
-          ),
-        ...excludeFoldersSchema,
-        ...excludePatternSchema,
-        ...tagsFilterSchema,
-        ...dateFilterSchema,
-        ...paginationSchema,
+        ...commonFilterSchema,
       },
     },
     ({ names, ...rest }) =>
@@ -437,12 +421,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
       description:
         "Find notes that have no tags (neither frontmatter nor inline). Optionally filter by folder, tags to exclude, date, or name pattern.",
       inputSchema: {
-        folder: z
-          .string()
-          .optional()
-          .describe(
-            "Only include notes in this folder (e.g. 'journal' or 'projects')",
-          ),
+        ...folderSchema,
         ...excludeFoldersSchema,
         ...excludePatternSchema,
         exclude_tags: tagsFilterSchema.exclude_tags,

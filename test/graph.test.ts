@@ -8,12 +8,12 @@ import {
   batchFindBacklinks,
   orphans,
   missingNotes,
+  missingNotesBySource,
   traverse,
   stats,
   batchResolve,
   type GraphState,
 } from "../src/graph.js";
-import { passesTagFilter } from "../src/filter.js";
 import { allTags } from "../src/types.js";
 import {
   search,
@@ -925,66 +925,6 @@ describe("date filters", () => {
   });
 });
 
-describe("passesTagFilter", () => {
-  test("no filters → passes", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note)).toBe(true);
-  });
-
-  test("empty arrays → passes (same as undefined)", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, [], [])).toBe(true);
-  });
-
-  test("tags inclusion matches existing tag", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, ["project"])).toBe(true);
-  });
-
-  test("tags inclusion rejects note without tag", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, ["nonexistent"])).toBe(false);
-  });
-
-  test("tags inclusion uses OR semantics", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, ["project", "nonexistent"])).toBe(true);
-  });
-
-  test("excludeTags rejects note with excluded tag", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, undefined, ["project"])).toBe(false);
-  });
-
-  test("excludeTags passes note without excluded tag", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, undefined, ["nonexistent"])).toBe(true);
-  });
-
-  test("combined: tags inclusion + excludeTags rejection", () => {
-    // Note B has tags: reference, topicB
-    const note = resolve("Note B", state)!;
-    expect(passesTagFilter(note, ["reference"], ["topicB"])).toBe(false);
-  });
-
-  test("strips leading # from tags", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, ["#project"])).toBe(true);
-  });
-
-  test("case-insensitive matching", () => {
-    const note = resolve("Note A", state)!;
-    expect(passesTagFilter(note, ["PROJECT"])).toBe(true);
-  });
-
-  test("note with no tags fails inclusion, passes exclusion", () => {
-    const note = resolve("Orphan Note", state)!;
-    expect(allTags(note).length).toBe(0);
-    expect(passesTagFilter(note, ["project"])).toBe(false);
-    expect(passesTagFilter(note, undefined, ["project"])).toBe(true);
-  });
-});
-
 describe("tag filters integration", () => {
   test("backlinks with tags filter includes only matching referrers", () => {
     // Note B is linked by Note A (project, active, tag1, nested/tag2) and Note C (reference)
@@ -1100,5 +1040,180 @@ describe("tag filters integration", () => {
     const names = result.results.map((r) => r.name);
     // Untagged notes shouldn't have "project" tag anyway, so same results
     expect(names).toContain("Orphan Note");
+  });
+});
+
+describe("multi-term search", () => {
+  test("multi-word query matches ANY term (OR)", () => {
+    const result = search("orphan journal", state);
+    const files = result.results.map((r) => r.file);
+    expect(files).toContain("Orphan Note");
+    expect(files).toContain("Daily Note");
+  });
+
+  test("multi_term: false preserves exact substring matching", () => {
+    const result = search("orphan journal", state, { multiTerm: false });
+    // "orphan journal" as a single substring won't match anything
+    expect(result.total).toBe(0);
+  });
+
+  test("single-word query is unaffected by multi_term", () => {
+    const withMulti = search("orphan", state, { multiTerm: true });
+    const withoutMulti = search("orphan", state, { multiTerm: false });
+    expect(withMulti.total).toBe(withoutMulti.total);
+  });
+
+  test("multi_term is ignored when regex=true", () => {
+    const result = search("orphan journal", state, { regex: true });
+    // regex treats the whole string as a pattern; "orphan journal" won't match
+    expect(result.total).toBe(0);
+  });
+
+  test("multi_term is ignored when whole_word=true", () => {
+    const result = search("orphan journal", state, { wholeWord: true });
+    // whole_word treats the whole string as one word-boundary pattern
+    expect(result.total).toBe(0);
+  });
+});
+
+describe("tags_mode AND", () => {
+  test("tags_mode 'all' requires all tags to be present", () => {
+    // Note A has project, active, tag1, nested/tag2
+    const bl = backlinks("Note B", state, {
+      tags: ["project", "active"],
+      tagsMode: "all",
+    });
+    const names = bl.results.map((r) => r.name);
+    expect(names).toContain("Note A"); // has both project and active
+    expect(names).not.toContain("Note C"); // has reference but not project/active
+  });
+
+  test("tags_mode 'all' rejects notes missing any required tag", () => {
+    // Note A has project + active; search for project + reference (Note A doesn't have reference)
+    const bl = backlinks("Note B", state, {
+      tags: ["project", "reference"],
+      tagsMode: "all",
+    });
+    const names = bl.results.map((r) => r.name);
+    // Note A has project but not reference, Note C has reference but not project
+    expect(names).not.toContain("Note A");
+    expect(names).not.toContain("Note C");
+  });
+
+  test("default tags_mode 'any' is OR", () => {
+    const bl = backlinks("Note B", state, {
+      tags: ["project", "reference"],
+      tagsMode: "any",
+    });
+    const names = bl.results.map((r) => r.name);
+    expect(names).toContain("Note A"); // has project
+    expect(names).toContain("Note C"); // has reference
+  });
+
+  test("single tag behaves identically for 'any' and 'all'", () => {
+    const anyResult = backlinks("Note B", state, {
+      tags: ["project"],
+      tagsMode: "any",
+    });
+    const allResult = backlinks("Note B", state, {
+      tags: ["project"],
+      tagsMode: "all",
+    });
+    expect(anyResult.total).toBe(allResult.total);
+    expect(
+      anyResult.results.map((r) => r.name).sort((a, b) => a.localeCompare(b)),
+    ).toEqual(
+      allResult.results.map((r) => r.name).sort((a, b) => a.localeCompare(b)),
+    );
+  });
+
+  test("tags_mode 'all' works with search", () => {
+    // Note A has project + active, search for content "note"
+    const result = search("note", state, {
+      tags: ["project", "active"],
+      tagsMode: "all",
+    });
+    const files = result.results.map((r) => r.file);
+    expect(files).toContain("Note A");
+    expect(files).not.toContain("Note B");
+  });
+
+  test("tags_mode 'all' works with findByTag", () => {
+    // Note B has reference + topicB, Note C has reference only, Note D has reference only
+    const result = findByTag("reference", state, {
+      tags: ["topicB"],
+      tagsMode: "all",
+    });
+    const names = result.results.map((r) => r.name);
+    expect(names).toContain("Note B");
+    expect(names).not.toContain("Note C");
+    expect(names).not.toContain("Note D");
+  });
+});
+
+describe("missingNotesBySource", () => {
+  test("groups broken links by source note", () => {
+    const result = missingNotesBySource(state);
+    expect(result.total).toBeGreaterThan(0);
+    for (const entry of result.results) {
+      expect(entry.source).toBeDefined();
+      expect(entry.source_path).toBeDefined();
+      expect(Array.isArray(entry.broken_links)).toBe(true);
+      expect(entry.count).toBe(entry.broken_links.length);
+    }
+  });
+
+  test("Note A has broken embed diagram.png", () => {
+    const result = missingNotesBySource(state);
+    const noteA = result.results.find((r) => r.source === "Note A");
+    expect(noteA).toBeDefined();
+    const embedLink = noteA!.broken_links.find(
+      (bl) => bl.name === "diagram.png",
+    );
+    expect(embedLink).toBeDefined();
+    expect(embedLink!.is_embed).toBe(true);
+  });
+
+  test("Note B has broken wikilink 'missing note'", () => {
+    const result = missingNotesBySource(state);
+    const noteB = result.results.find((r) => r.source === "Note B");
+    expect(noteB).toBeDefined();
+    const wikilink = noteB!.broken_links.find(
+      (bl) => bl.name === "missing note",
+    );
+    expect(wikilink).toBeDefined();
+    expect(wikilink!.is_embed).toBe(false);
+  });
+
+  test("sorted by count descending", () => {
+    const result = missingNotesBySource(state);
+    for (let i = 1; i < result.results.length; i++) {
+      expect(result.results[i].count).toBeLessThanOrEqual(
+        result.results[i - 1].count,
+      );
+    }
+  });
+
+  test("type filter works with source grouping", () => {
+    const noteOnly = missingNotesBySource(state, { type: "note" });
+    for (const entry of noteOnly.results) {
+      for (const bl of entry.broken_links) {
+        expect(bl.is_embed).toBe(false);
+      }
+    }
+
+    const embedOnly = missingNotesBySource(state, { type: "embed" });
+    for (const entry of embedOnly.results) {
+      for (const bl of entry.broken_links) {
+        expect(bl.is_embed).toBe(true);
+      }
+    }
+  });
+
+  test("pagination works with source grouping", () => {
+    const result = missingNotesBySource(state, { limit: 1, offset: 0 });
+    expect(result.results.length).toBeLessThanOrEqual(1);
+    expect(result.limit).toBe(1);
+    expect(result.offset).toBe(0);
   });
 });

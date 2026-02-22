@@ -15,6 +15,7 @@ function buildMatcher(
   query: string,
   wholeWord: boolean,
   regex: boolean,
+  multiTerm: boolean = true,
 ): (text: string) => boolean {
   if (regex) {
     try {
@@ -28,6 +29,15 @@ function buildMatcher(
   if (wholeWord) {
     const pattern = new RegExp(`\\b${escapeRegex(q)}\\b`, "i");
     return (text: string) => pattern.test(text);
+  }
+  if (multiTerm) {
+    const terms = q.split(/\s+/).filter((t) => t.length > 0);
+    if (terms.length > 1) {
+      return (text: string) => {
+        const lower = text.toLowerCase();
+        return terms.some((term) => lower.includes(term));
+      };
+    }
   }
   return (text: string) => text.toLowerCase().includes(q);
 }
@@ -83,12 +93,14 @@ export function search(
       wholeWord?: boolean;
       includeNames?: boolean;
       regex?: boolean;
+      multiTerm?: boolean;
     } = {},
 ) {
   const matchText = buildMatcher(
     query,
     opts.wholeWord ?? false,
     opts.regex ?? false,
+    opts.multiTerm ?? true,
   );
 
   const filteredNotes = filterNotes(state.notes, state.vaultPath, {

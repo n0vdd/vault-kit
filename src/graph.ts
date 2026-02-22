@@ -173,6 +173,7 @@ export function backlinks(
     modifiedBefore: opts.modifiedBefore,
     tags: opts.tags,
     excludeTags: opts.excludeTags,
+    tagsMode: opts.tagsMode,
   });
 
   const all: { name: string; path: string | null }[] = [];
@@ -266,7 +267,15 @@ export function orphans(
   return paginate(orphanList, opts);
 }
 
+type BrokenLinkType = "note" | "embed" | "all";
+
 const HAS_EXTENSION = /\.\w{1,5}$/;
+
+function passesTypeFilter(name: string, type: BrokenLinkType): boolean {
+  if (type === "all") return true;
+  const isEmbed = HAS_EXTENSION.test(name);
+  return type === "embed" ? isEmbed : !isEmbed;
+}
 
 function buildScopeKeys(
   noteNames: string[] | undefined,
@@ -284,16 +293,12 @@ function buildScopeKeys(
 function filterMissingEntry(
   name: string,
   referrers: Set<string>,
-  type: "note" | "embed" | "all",
+  type: BrokenLinkType,
   scopeKeys: Set<string> | null,
   state: GraphState,
   cf: CompiledFilter,
 ): { name: string; referenced_by: string[]; count: number } | null {
-  if (type !== "all") {
-    const isEmbed = HAS_EXTENSION.test(name);
-    if (type === "note" && isEmbed) return null;
-    if (type === "embed" && !isEmbed) return null;
-  }
+  if (!passesTypeFilter(name, type)) return null;
 
   const filteredReferrers = [...referrers].filter((refKey) => {
     if (scopeKeys && !scopeKeys.has(refKey)) return false;
@@ -314,7 +319,7 @@ export function missingNotes(
   state: GraphState,
   opts: PaginationOpts &
     FilterOptions & {
-      type?: "note" | "embed" | "all";
+      type?: BrokenLinkType;
       noteNames?: string[];
     } = {},
 ): PaginatedResult<{ name: string; referenced_by: string[]; count: number }> {
@@ -341,6 +346,73 @@ export function missingNotes(
   missingList.sort((a, b) => b.count - a.count);
 
   return paginate(missingList, opts);
+}
+
+function isReferrerInScope(
+  refKey: string,
+  scopeKeys: Set<string> | null,
+  state: GraphState,
+  cf: CompiledFilter,
+): boolean {
+  if (scopeKeys && !scopeKeys.has(refKey)) return false;
+  const note = state.notes.get(refKey);
+  if (!note) return false;
+  return passesCompiledFilter(note, state.vaultPath, cf);
+}
+
+function collectBySource(
+  state: GraphState,
+  type: BrokenLinkType,
+  scopeKeys: Set<string> | null,
+  cf: CompiledFilter,
+): Map<string, { name: string; is_embed: boolean }[]> {
+  const bySource = new Map<string, { name: string; is_embed: boolean }[]>();
+
+  for (const [name, referrers] of state.missing) {
+    if (!passesTypeFilter(name, type)) continue;
+    const isEmbed = HAS_EXTENSION.test(name);
+
+    for (const refKey of referrers) {
+      if (!isReferrerInScope(refKey, scopeKeys, state, cf)) continue;
+      if (!bySource.has(refKey)) bySource.set(refKey, []);
+      bySource.get(refKey)!.push({ name, is_embed: isEmbed });
+    }
+  }
+
+  return bySource;
+}
+
+export function missingNotesBySource(
+  state: GraphState,
+  opts: PaginationOpts &
+    FilterOptions & {
+      type?: BrokenLinkType;
+      noteNames?: string[];
+    } = {},
+): PaginatedResult<{
+  source: string;
+  source_path: string;
+  broken_links: { name: string; is_embed: boolean }[];
+  count: number;
+}> {
+  const type = opts.type ?? "all";
+  const cf = compileFilter(opts);
+  const scopeKeys = buildScopeKeys(opts.noteNames, state);
+  const bySource = collectBySource(state, type, scopeKeys, cf);
+
+  const sourceList = [...bySource.entries()]
+    .map(([key, broken_links]) => {
+      const note = state.notes.get(key)!;
+      return {
+        source: note.name,
+        source_path: note.path,
+        broken_links,
+        count: broken_links.length,
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.source.localeCompare(b.source));
+
+  return paginate(sourceList, opts);
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- BFS neighbor processing with exclude/link-type detection
