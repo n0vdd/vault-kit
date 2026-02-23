@@ -7,6 +7,8 @@ import {
   extractHeadings,
   extractCheckboxes,
   extractInlineTags,
+  serializeFrontmatter,
+  replaceFrontmatter,
 } from "../src/markdown.js";
 
 const noteA = readFileSync(join(__dirname, "fixtures", "Note A.md"), "utf-8");
@@ -148,5 +150,51 @@ describe("extractInlineTags", () => {
     );
     expect(tags).toContain("inline_tag");
     expect(tags).not.toContain("yaml_tag");
+  });
+});
+
+describe("serializeFrontmatter", () => {
+  test("serializes simple frontmatter", () => {
+    const result = serializeFrontmatter({ tags: ["a", "b"], status: "draft" });
+    expect(result).toBe("---\ntags:\n  - a\n  - b\nstatus: draft\n---\n");
+  });
+
+  test("serializes empty object", () => {
+    const result = serializeFrontmatter({});
+    expect(result).toBe("---\n{}\n---\n");
+  });
+
+  test("serializes links array", () => {
+    const result = serializeFrontmatter({
+      links: ["[[Note A]]", "[[Note B]]"],
+    });
+    expect(result).toContain("[[Note A]]");
+    expect(result).toContain("[[Note B]]");
+    expect(result).toMatch(/^---\n/);
+    expect(result).toMatch(/\n---\n$/);
+  });
+});
+
+describe("replaceFrontmatter", () => {
+  test("replaces existing frontmatter", () => {
+    const content = "---\ntags:\n  - old\n---\n# Heading\n\nBody text.";
+    const result = replaceFrontmatter(content, { tags: ["new"] });
+    expect(result).toContain("tags:\n  - new");
+    expect(result).toContain("# Heading\n\nBody text.");
+    expect(result).not.toContain("old");
+  });
+
+  test("prepends frontmatter when none exists", () => {
+    const content = "# Heading\n\nBody text.";
+    const result = replaceFrontmatter(content, { tags: ["added"] });
+    expect(result).toMatch(/^---\ntags:\n {2}- added\n---\n# Heading/);
+  });
+
+  test("preserves body content exactly", () => {
+    const body =
+      "# Title\n\nSome content with [[wikilinks]] and #tags.\n\n- list item\n";
+    const content = "---\nold: value\n---\n" + body;
+    const result = replaceFrontmatter(content, { new: "value" });
+    expect(result).toContain(body);
   });
 });

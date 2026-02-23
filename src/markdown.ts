@@ -115,6 +115,23 @@ export function extractInlineTags(lines: string[]): string[] {
   return results;
 }
 
+export function serializeFrontmatter(fm: Record<string, unknown>): string {
+  const yamlStr = YAML.stringify(fm, { lineWidth: 0 }).trimEnd();
+  return `---\n${yamlStr}\n---\n`;
+}
+
+export function replaceFrontmatter(
+  content: string,
+  newFm: Record<string, unknown>,
+): string {
+  const serialized = serializeFrontmatter(newFm);
+  const match = FRONTMATTER_RE.exec(content);
+  if (match) {
+    return serialized + content.slice(match[0].length);
+  }
+  return serialized + content;
+}
+
 export function stripFrontmatterLines(lines: string[]): string[] {
   if (lines.length === 0 || lines[0] !== "---") return lines;
   for (let i = 1; i < lines.length; i++) {

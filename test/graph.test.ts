@@ -843,7 +843,6 @@ describe("findUntagged new filters", () => {
   });
 });
 
-
 describe("Note mtime field", () => {
   test("notes have mtime as Date", () => {
     const note = resolve("Note A", state);
@@ -1114,6 +1113,18 @@ describe("tags_mode AND", () => {
     const files = result.results.map((r) => r.file);
     expect(files).toContain("Note A");
     expect(files).not.toContain("Note B");
+  });
+
+  test("search passes tagsMode through to filterNotes", () => {
+    // Note A has project + active; Note B has reference
+    // With "all" mode and tags ["project", "reference"], neither Note A nor Note B should match
+    const result = search("note", state, {
+      tags: ["project", "reference"],
+      tagsMode: "all",
+    });
+    const files = result.results.map((r) => r.file);
+    expect(files).not.toContain("Note A"); // has project but not reference
+    expect(files).not.toContain("Note B"); // has reference but not project
   });
 
   test("tags_mode 'all' works with findByTag", () => {

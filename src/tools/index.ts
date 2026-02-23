@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { writeFileSync, readFileSync } from "fs";
+import { scanVault } from "../vault.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   traverse,
@@ -10,9 +12,11 @@ import {
   resolve,
   stats,
   batchResolve,
+  refreshNote,
   type GraphState,
 } from "../graph.js";
 import { allTags } from "../types.js";
+import { extractFrontmatter, replaceFrontmatter } from "../markdown.js";
 import {
   search,
   findByTag,
@@ -122,6 +126,76 @@ const commonFilterNoPagination = {
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+}
+
+function errorResult(message: string) {
+  return {
+    isError: true as const,
+    content: [{ type: "text" as const, text: message }],
+  };
+}
+
+function extractExistingTags(fm: Record<string, unknown>): string[] {
+  if (Array.isArray(fm.tags)) return fm.tags.map(String);
+  if (typeof fm.tags === "string") return [fm.tags];
+  return [];
+}
+
+function mergeTags(existing: string[], incoming: string[]): string[] {
+  const normalized = incoming.map((t) => t.replace(/^#/, "").toLowerCase());
+  return [
+    ...new Set([...existing.map((t) => t.toLowerCase()), ...normalized]),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
+function validateTags(
+  incoming: string[],
+  canonicalTags: Set<string>,
+): string[] {
+  if (canonicalTags.size === 0) return [];
+  const unknown = incoming
+    .map((t) => t.replace(/^#/, "").toLowerCase())
+    .filter((t) => !canonicalTags.has(t));
+  return unknown;
+}
+
+function mergeLinks(
+  existing: Record<string, unknown>,
+  incoming: string[],
+): string[] {
+  const existingLinks: string[] = Array.isArray(existing.links)
+    ? existing.links.map(String)
+    : [];
+  return [...new Set([...existingLinks, ...incoming])];
+}
+
+function mergeAliases(
+  existing: Record<string, unknown>,
+  incoming: string[],
+): string[] {
+  const existingAliases: string[] = Array.isArray(existing.aliases)
+    ? existing.aliases.map(String)
+    : [];
+  // Deduplicate by exact value (case-sensitive — aliases are display names)
+  const seen = new Set(existingAliases);
+  const merged = [...existingAliases];
+  for (const alias of incoming) {
+    if (!seen.has(alias)) {
+      seen.add(alias);
+      merged.push(alias);
+    }
+  }
+  return merged;
+}
+
+function findNoteOnDisk(name: string, vaultPath: string): string | null {
+  const allPaths = scanVault(vaultPath);
+  const normalized = name.trim().toLowerCase();
+  for (const p of allPaths) {
+    const base = p.slice(p.lastIndexOf("/") + 1, -3).toLowerCase();
+    if (base === normalized) return p;
+  }
+  return null;
 }
 
 function mapFilterOpts(
@@ -258,7 +332,7 @@ export function registerAllTools(server: McpServer, state: GraphState) {
     ({ note_name }) => {
       const note = resolve(note_name, state);
       if (!note) {
-        return jsonResult({ error: `Note '${note_name}' not found` });
+        return errorResult(`Note '${note_name}' not found`);
       }
       return jsonResult({
         name: note.name,
@@ -357,7 +431,6 @@ export function registerAllTools(server: McpServer, state: GraphState) {
     (input) => jsonResult(stats(state, mapFilterOpts(input))),
   );
 
-
   server.registerTool(
     "batch_resolve",
     {
@@ -435,5 +508,98 @@ export function registerAllTools(server: McpServer, state: GraphState) {
     },
     ({ name, threshold, limit, offset }) =>
       jsonResult(findSimilarNames(name, state, { threshold, limit, offset })),
+  );
+
+  server.registerTool(
+    "write_frontmatter",
+    {
+      description:
+        "Add tags, links, and/or aliases to a note's YAML frontmatter. Merge-only: never deletes existing values. Validates tags against the canonical vocabulary (tags.md) and warns about unknown ones. Updates the in-memory graph after writing.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+      inputSchema: {
+        note_name: z
+          .string()
+          .describe(
+            "Name of the note to update (resolved via fuzzy matching, without .md extension)",
+          ),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Tags to add (merged with existing, deduplicated, sorted)"),
+        links: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Wikilinks to add to the links: field (format: "[[Note Name]]")',
+          ),
+        aliases: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Aliases to add (merged with existing, deduplicated, order and casing preserved)",
+          ),
+      },
+    },
+    ({ note_name, tags, links, aliases }) => {
+      if (!tags?.length && !links?.length && !aliases?.length) {
+        return errorResult(
+          "At least one of 'tags', 'links', or 'aliases' must be provided",
+        );
+      }
+
+      let note = resolve(note_name, state);
+      if (!note) {
+        // Fallback: look for the file on disk (handles newly created notes)
+        const diskPath = findNoteOnDisk(note_name, state.vaultPath);
+        if (diskPath) {
+          refreshNote(diskPath, state);
+          note = resolve(note_name, state);
+        }
+        if (!note) {
+          return errorResult(`Note '${note_name}' not found`);
+        }
+      }
+
+      try {
+        const content = readFileSync(note.path, "utf-8");
+        const fm = extractFrontmatter(content) ?? {};
+        const warnings: string[] = [];
+
+        if (tags?.length) {
+          fm.tags = mergeTags(extractExistingTags(fm), tags);
+          const unknown = validateTags(tags, state.canonicalTags);
+          if (unknown.length > 0) {
+            warnings.push(`Unknown tags not in tags.md: ${unknown.join(", ")}`);
+          }
+        }
+
+        if (links?.length) {
+          fm.links = mergeLinks(fm, links);
+        }
+
+        if (aliases?.length) {
+          fm.aliases = mergeAliases(fm, aliases);
+        }
+
+        writeFileSync(note.path, replaceFrontmatter(content, fm), "utf-8");
+        refreshNote(note.path, state);
+
+        const result: Record<string, unknown> = {
+          note: note.name,
+          path: note.path,
+          frontmatter: fm,
+        };
+        if (warnings.length > 0) result.warnings = warnings;
+
+        return jsonResult(result);
+      } catch (err) {
+        return errorResult(
+          `Failed to update '${note_name}': ${(err as Error).message}`,
+        );
+      }
+    },
   );
 }

@@ -21,6 +21,8 @@ export interface GraphState {
   backward: Map<string, Set<string>>;
   missing: Map<string, Set<string>>;
   fuzzyIndex: Map<string, string>;
+  pathIndex: Map<string, string>;
+  canonicalTags: Set<string>;
 }
 
 export function buildGraph(vaultPath: string): GraphState {
@@ -39,14 +41,26 @@ export function buildGraph(vaultPath: string): GraphState {
   const { forward, backward, missing } = buildAdjacency(notes);
 
   const fuzzyIndex = new Map<string, string>();
+  const pathIndex = new Map<string, string>();
   for (const [key, note] of notes) {
     const fk = normalizeFuzzy(note.name);
     if (!fuzzyIndex.has(fk)) fuzzyIndex.set(fk, key);
+    pathIndex.set(note.path, key);
   }
 
-  return { vaultPath, notes, forward, backward, missing, fuzzyIndex };
-}
+  const canonicalTags = parseCanonicalTags(notes);
 
+  return {
+    vaultPath,
+    notes,
+    forward,
+    backward,
+    missing,
+    fuzzyIndex,
+    pathIndex,
+    canonicalTags,
+  };
+}
 
 function buildAdjacency(notes: Map<string, Note>) {
   const forward = new Map<string, Set<string>>();
@@ -558,6 +572,81 @@ export function stats(state: GraphState, opts: FilterOptions = {}) {
     orphans: orphanCount,
     missing_links: missingCount,
   };
+}
+
+const CANONICAL_TAG_RE = /`([^`]+)`\(\d+\)/g;
+
+function parseCanonicalTags(notes: Map<string, Note>): Set<string> {
+  const tagsNote = notes.get(normalize("tags"));
+  if (!tagsNote) return new Set();
+  const tags = new Set<string>();
+  for (const match of tagsNote.content.matchAll(CANONICAL_TAG_RE)) {
+    tags.add(match[1].toLowerCase());
+  }
+  return tags;
+}
+
+function removeFromMap(
+  map: Map<string, Set<string>>,
+  target: string,
+  source: string,
+): void {
+  const set = map.get(target);
+  if (!set) return;
+  set.delete(source);
+  if (set.size === 0) map.delete(target);
+}
+
+function addToMap(
+  map: Map<string, Set<string>>,
+  target: string,
+  source: string,
+): void {
+  if (!map.has(target)) map.set(target, new Set());
+  map.get(target)!.add(source);
+}
+
+export function refreshNote(notePath: string, state: GraphState): void {
+  const oldKey = state.pathIndex.get(notePath);
+
+  if (oldKey) {
+    // Remove old forward links from backward/missing maps
+    const oldTargets = state.forward.get(oldKey);
+    if (oldTargets) {
+      for (const target of oldTargets) {
+        removeFromMap(state.backward, target, oldKey);
+        removeFromMap(state.missing, target, oldKey);
+      }
+      state.forward.delete(oldKey);
+    }
+  }
+
+  // Read (or re-read) the note and insert into graph
+  const newNote = readNote(notePath);
+  const key = normalize(newNote.name);
+  state.notes.set(key, newNote);
+
+  // Update fuzzy index (needed for upsert of new notes)
+  const fk = normalizeFuzzy(newNote.name);
+  if (!state.fuzzyIndex.has(fk)) state.fuzzyIndex.set(fk, key);
+
+  // Update path index
+  state.pathIndex.set(notePath, key);
+
+  const newTargets = new Set(newNote.wikilinks.map((wl) => normalize(wl.name)));
+  state.forward.set(key, newTargets);
+
+  for (const targetKey of newTargets) {
+    addToMap(state.backward, targetKey, key);
+    if (!state.notes.has(targetKey)) {
+      addToMap(state.missing, targetKey, key);
+    }
+  }
+
+  // Re-parse canonical tags if the tags note was updated
+  if (key === normalize("tags")) {
+    state.canonicalTags = parseCanonicalTags(state.notes);
+  }
 }
 
 function normalize(name: string): string {

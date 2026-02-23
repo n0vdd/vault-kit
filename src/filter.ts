@@ -48,16 +48,21 @@ function normalizeTagSet(tags?: string[]): Set<string> | undefined {
   return new Set(tags.map((t) => t.replace(/^#/, "").toLowerCase()));
 }
 
+function parseDate(str: string): Date | undefined {
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
 export function compileFilter(opts: FilterOptions): CompiledFilter {
   return {
     folder: opts.folder,
     excludeFolders: opts.excludeFolders,
     excludeRe: compileExcludePattern(opts.excludePattern),
     modifiedAfter: opts.modifiedAfter
-      ? new Date(opts.modifiedAfter)
+      ? parseDate(opts.modifiedAfter)
       : undefined,
     modifiedBefore: opts.modifiedBefore
-      ? new Date(opts.modifiedBefore)
+      ? parseDate(opts.modifiedBefore)
       : undefined,
     tagSet: normalizeTagSet(opts.tags),
     excludeTagSet: normalizeTagSet(opts.excludeTags),
@@ -83,7 +88,7 @@ export function ensureTrailingSlash(path: string): string {
   return path.endsWith("/") ? path : path + "/";
 }
 
-export function isNoteInFolder(
+function isNoteInFolder(
   note: Note,
   vaultPath: string,
   folderPrefix: string,

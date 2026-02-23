@@ -6,7 +6,6 @@ import {
   type PaginatedResult,
   paginate,
   filterNotes,
-  isNoteInFolder,
 } from "./filter.js";
 
 type SearchHit = { file: string; path: string; line: number; text: string };
@@ -44,13 +43,10 @@ function buildMatcher(
 
 function collectNameMatches(
   notes: Map<string, Note>,
-  vaultPath: string,
   matchText: (text: string) => boolean,
   hits: SearchHit[],
-  folder?: string,
 ): void {
   for (const [, note] of notes) {
-    if (folder && !isNoteInFolder(note, vaultPath, folder)) continue;
     if (matchText(note.name)) {
       hits.push({
         file: note.name,
@@ -64,13 +60,10 @@ function collectNameMatches(
 
 function collectContentMatches(
   notes: Map<string, Note>,
-  vaultPath: string,
   matchText: (text: string) => boolean,
   hits: SearchHit[],
-  folder?: string,
 ): void {
   for (const [, note] of notes) {
-    if (folder && !isNoteInFolder(note, vaultPath, folder)) continue;
     const lines = note.content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       if (matchText(lines[i])) {
@@ -103,32 +96,13 @@ export function search(
     opts.multiTerm ?? true,
   );
 
-  const filteredNotes = filterNotes(state.notes, state.vaultPath, {
-    excludeFolders: opts.excludeFolders,
-    excludePattern: opts.excludePattern,
-    modifiedAfter: opts.modifiedAfter,
-    modifiedBefore: opts.modifiedBefore,
-    tags: opts.tags,
-    excludeTags: opts.excludeTags,
-  });
+  const filteredNotes = filterNotes(state.notes, state.vaultPath, opts);
 
   const collected: SearchHit[] = [];
   if (opts.includeNames) {
-    collectNameMatches(
-      filteredNotes,
-      state.vaultPath,
-      matchText,
-      collected,
-      opts.folder,
-    );
+    collectNameMatches(filteredNotes, matchText, collected);
   }
-  collectContentMatches(
-    filteredNotes,
-    state.vaultPath,
-    matchText,
-    collected,
-    opts.folder,
-  );
+  collectContentMatches(filteredNotes, matchText, collected);
 
   return paginate(collected, opts);
 }
@@ -155,11 +129,12 @@ export function findByTag(
     inlineTags: string[];
   }[] = [];
   for (const [, note] of inScope) {
-    if (allTags(note).some((t) => t.toLowerCase() === normalizedTag)) {
+    const tags = allTags(note);
+    if (tags.some((t) => t.toLowerCase() === normalizedTag)) {
       matches.push({
         name: note.name,
         path: note.path,
-        tags: allTags(note),
+        tags,
         frontmatterTags: note.frontmatterTags,
         inlineTags: note.inlineTags,
       });
@@ -188,24 +163,22 @@ export function findUntagged(
 }
 
 export function levenshtein(a: string, b: string): number {
+  // Ensure b is the shorter string so we allocate less space
+  if (a.length < b.length) [a, b] = [b, a];
   const m = a.length;
   const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    new Array<number>(n + 1).fill(0),
-  );
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
   for (let i = 1; i <= m; i++) {
+    curr[0] = i;
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + cost,
-      );
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
     }
+    [prev, curr] = [curr, prev];
   }
-  return dp[m][n];
+  return prev[n];
 }
 
 export function findSimilarNames(
